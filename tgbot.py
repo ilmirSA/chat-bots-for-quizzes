@@ -1,6 +1,5 @@
 import json
 import os
-import random
 from enum import Enum, auto
 from functools import partial
 
@@ -9,6 +8,10 @@ from dotenv import load_dotenv
 from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, ConversationHandler
 
+from get_answer import get_answer
+from get_random_questions import get_questions
+from json_parse import parse_json
+
 ASK_QUESTION, CHECK_ANSWER, SURRENDERED = range(3)
 
 
@@ -16,14 +19,7 @@ class Handlers(Enum):
     ASK_QUESTION = auto()
     CHECK_ANSWER = auto()
     SURRENDERED = auto()
-    MY_SCORE=auto()
-
-
-def parse_json(connect_to_redis, user_info, chat_id, question):
-    user_info = json.loads(user_info)
-    user_info[f"user_tg_{chat_id}"] = {"last_asked_question": question}
-    user_info_json = json.dumps(user_info)
-    return user_info_json
+    MY_SCORE = auto()
 
 
 def create_tg_keyboard():
@@ -35,41 +31,48 @@ def create_tg_keyboard():
 
 def handle_new_question_request(connect_to_redis, update, context):
     chat_id = update.effective_chat.id
-    get_questions = connect_to_redis.get('questions')
-    questions = json.loads(get_questions)
-    print(questions)
-    question_number = random.choice(list(questions))
-    question = questions.get(question_number)['question']
-    user_counter=f'user_counter{chat_id}'
-    if not connect_to_redis.get(user_counter):
-        connect_to_redis.set(user_counter,0)
+    question, question_number = get_questions(connect_to_redis)
+
+    correct_user_responses = f'correct_user_responses{chat_id}'
+    incorrect_user_responses = f'incorrect_user_responses{chat_id}'
+
+    if not connect_to_redis.get(correct_user_responses):
+        connect_to_redis.set(correct_user_responses, 0)
+        connect_to_redis.set(incorrect_user_responses, 0)
+
     context.bot.send_message(
         chat_id=chat_id,
         text=question,
         reply_markup=create_tg_keyboard()
     )
-    users_info= connect_to_redis.get('users')
-    user_json = parse_json(connect_to_redis, users_info, chat_id, question_number)
-    connect_to_redis.set('users', user_json)
 
+    if not connect_to_redis.get('all_users'):
+        user_tg_info = {f'user_tg_{chat_id}': {'last_asked_question': question_number}}
+        user_tg_info_json = json.dumps(user_tg_info)
+        connect_to_redis.set('all_users', user_tg_info_json)
 
+    all_users_info = connect_to_redis.get('all_users')
+    user_json = parse_json(all_users_info, chat_id, question_number, 'tg')
+    connect_to_redis.set('all_users', user_json)
 
     return Handlers.CHECK_ANSWER
 
 
 def handle_solution_attempt(connect_to_redis, update, context):
     chat_id = update.effective_chat.id
-    user_last_question = json.loads(connect_to_redis.get('users'))[f'user_tg_{chat_id}']['last_asked_question']
-    answer_to_the_question = json.loads(connect_to_redis.get('questions'))[user_last_question]['answer']
-    user_counter_id= f'user_counter{chat_id}'
-    if update.message.text.split(".")[0] in answer_to_the_question:
+
+    answer = get_answer(connect_to_redis, chat_id, 'tg')
+
+    correct_user_responses_info = f'correct_user_responses{chat_id}'
+    incorrect_user_responses_info = f'incorrect_user_responses{chat_id}'
+    if update.message.text.split(".")[0] in answer:
         context.bot.send_message(
             chat_id=update.effective_chat.id,
             text='Правильно! Поздравляю! Для следующего вопроса нажми "Новый вопрос"',
             reply_markup=create_tg_keyboard(),
         )
 
-        connect_to_redis.incr(user_counter_id)
+        connect_to_redis.incr(correct_user_responses_info)
 
         return Handlers.ASK_QUESTION
     else:
@@ -78,33 +81,36 @@ def handle_solution_attempt(connect_to_redis, update, context):
             text='Неправильно, Попробуешь ещё раз?',
             reply_markup=create_tg_keyboard()
         )
-        print(connect_to_redis.get(user_counter_id))
+        connect_to_redis.incr(incorrect_user_responses_info)
         return Handlers.CHECK_ANSWER
 
 
 def hadle_surrendered(connect_to_redis, update, context):
     chat_id = update.effective_chat.id
-    user_last_question = json.loads(connect_to_redis.get('users'))[f'user_tg_{chat_id}']['last_asked_question']
-    answer_to_the_question = json.loads(connect_to_redis.get('questions'))[user_last_question]['answer']
+    answer = get_answer(connect_to_redis, chat_id, 'tg')
 
     context.bot.send_message(
         chat_id=chat_id,
-        text=f"Вот тебе правильный ответ: {answer_to_the_question}\n\n"
+        text=f'Вот тебе правильный ответ: {answer}\n\n'
              f'Что бы продолжить нажми "Новый вопрос"',
     )
     return Handlers.ASK_QUESTION
 
 
-def show_score(connect_to_redis,update,context):
-    chat_id=update.effective_chat.id
-    user_score=connect_to_redis.get(f'user_counter{chat_id}')
+def show_score(connect_to_redis, update, context):
+    chat_id = update.effective_chat.id
+
+    right_answers = connect_to_redis.get(f'correct_user_responses{chat_id}')
+    wrong_answers = connect_to_redis.get(f'incorrect_user_responses{chat_id}')
     context.bot.send_message(
         chat_id=chat_id,
-        text=f"Количество правильных ответов равняеться : {user_score} "
-             f"Что бы продолжить нажми на кнопку Новый вопрос",
+        text=f'Количество правильных ответов : {right_answers} \n'
+             f'Количество не правильных : {wrong_answers}\n'
+             f'Что бы продолжить нажми на кнопку "Новый вопрос"',
         reply_markup=create_tg_keyboard()
     )
     return Handlers.ASK_QUESTION
+
 
 def cancel(update, context):
     update.message.reply_text('Всего хорошего!.',
@@ -114,7 +120,7 @@ def cancel(update, context):
 
 
 def start(update, context):
-    context.bot.send_message(chat_id=update.effective_chat.id, text="Привет! я бот для викторин!",
+    context.bot.send_message(chat_id=update.effective_chat.id, text='Привет! я бот для викторин!',
                              reply_markup=create_tg_keyboard())
     return Handlers.ASK_QUESTION
 
@@ -135,7 +141,8 @@ def main():
         states={
 
             Handlers.ASK_QUESTION: [MessageHandler(Filters.text('Мой счет'), partial(show_score, connect_to_redis)),
-                MessageHandler(Filters.text & (~Filters.command),partial(handle_new_question_request, connect_to_redis)),
+                                    MessageHandler(Filters.text & (~Filters.command),
+                                                   partial(handle_new_question_request, connect_to_redis)),
                                     ],
 
             Handlers.CHECK_ANSWER: [

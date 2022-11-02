@@ -1,5 +1,5 @@
+import json
 import os
-import random
 
 import redis
 import vk_api
@@ -8,7 +8,9 @@ from vk_api.bot_longpoll import VkBotLongPoll, VkBotEventType
 from vk_api.keyboard import VkKeyboard, VkKeyboardColor
 from vk_api.utils import get_random_id
 
-from questions_and_answers import get_answer_questions
+from get_answer import get_answer
+from get_random_questions import get_questions
+from json_parse import parse_json
 
 
 def keyboard():
@@ -25,34 +27,66 @@ def keyboard():
 
 def start(event, vk_method):
     user_id = event.obj['message']['from_id']
-    message = "Приветсвуем тебя в нашкй викторине!что бы начать нажми на кнопку 'Новый вопрос'`"
+    message = 'Приветсвуем тебя в нашкй викторине!что бы начать нажми на кнопку "Новый вопрос"'
     random_id = get_random_id()
     send_message(event, vk_method, user_id, message)
 
 
-def ask_question(event, vk_method, connect_to_redis, questions):
-    question = random.choice(list(questions))
+def ask_question(event, vk_method, connect_to_redis):
     user_id = event.obj['message']['from_id']
+
+    correct_user_responses = f'correct_user_responses{user_id}'
+    incorrect_user_responses = f'incorrect_user_responses{user_id}'
+
+    if not connect_to_redis.get(correct_user_responses):
+        connect_to_redis.set(correct_user_responses, 0)
+        connect_to_redis.set(incorrect_user_responses, 0)
+
+    question, question_number = get_questions(connect_to_redis)
+    if not connect_to_redis.get('all_users'):
+        user_tg_info = {f'user_vk_{user_id}': {'last_asked_question': question_number}}
+        user_tg_info_json = json.dumps(user_tg_info)
+        connect_to_redis.set('all_users', user_tg_info_json)
+
     send_message(event, vk_method, user_id, question)
-    connect_to_redis.set(user_id, question)
+    users_vk_info = connect_to_redis.get('all_users')
+    user_vk_info_json = parse_json(users_vk_info, user_id, question_number, 'vk', )
+    connect_to_redis.set('all_users', user_vk_info_json)
 
 
-def response_check(event, vk_method, questions, connect_to_redis):
+def response_check(event, vk_method, connect_to_redis):
     user_id = event.obj['message']['from_id']
 
-    if questions.get(connect_to_redis.get(user_id)) == event.obj['message']['text']:
-        message = "Правильно!Поздравляю!Для следующего вопроса нажми на кнопку 'Новый вопрос'",
+    answer = get_answer(connect_to_redis, user_id, 'vk')
+
+    correct_user_responses_info = f'correct_user_responses{user_id}'
+    incorrect_user_responses_info = f'incorrect_user_responses{user_id}'
+
+    if event.obj['message']['text'].split('.')[0] in answer:
+        message = 'Правильно!Поздравляю!Для следующего вопроса нажми на кнопку "Новый вопрос"',
         send_message(event, vk_method, user_id, message)
+        connect_to_redis.incr(correct_user_responses_info)
     else:
-        message = "Не правильно! Попробуешь ещё раз?",
+        message = 'Не правильно! Попробуешь ещё раз?',
         send_message(event, vk_method, user_id, message)
+        connect_to_redis.incr(incorrect_user_responses_info)
 
 
-def issue_an_answer(event, vk_method, connect_to_redis, questions):
+def issue_an_answer(event, vk_method, connect_to_redis):
+    keyboard = VkKeyboard(one_time=True)
+    keyboard.add_button('Вопрос составлен неверно', color=VkKeyboardColor.NEGATIVE)
+    keyboard.add_button('Новый вопрос', color=VkKeyboardColor.PRIMARY)
+
     user_id = event.obj['message']['from_id']
-    answer = questions.get(connect_to_redis.get(user_id))
-    message = f"Вот тебе правильный ответ: {answer}. Что бы продолжить нажми на кнопку 'Новый вопрос'",
-    send_message(event, vk_method, user_id, message)
+
+    answer = get_answer(connect_to_redis, user_id, 'vk')
+    message = f'Вот тебе правильный ответ: {answer}. Что бы продолжить нажми на кнопку "Новый вопрос"'
+    vk_method.messages.send(
+        user_id=user_id,
+        message=message,
+        random_id=get_random_id(),
+        keyboard=keyboard.get_keyboard()
+    )
 
 
 def send_message(event, vk_method, user_id, message):
@@ -64,32 +98,42 @@ def send_message(event, vk_method, user_id, message):
     )
 
 
+def show_score(event, vk_method, connect_to_redis):
+    user_id = event.obj['message']['from_id']
+
+    right_answers = connect_to_redis.get(f'correct_user_responses{user_id}')
+    wrong_answers = connect_to_redis.get(f'incorrect_user_responses{user_id}')
+    message = f'Количество правильных ответов : {right_answers} \n Количество не правильных : {wrong_answers}\n Что бы продолжить нажми на кнопку "Новый вопрос"'
+    send_message(event, vk_method, user_id, message)
+
+
 def main():
     load_dotenv()
-    vk_token = os.getenv("VK_TOKEN")
-    vk_group_id = os.getenv("VK_GROUP_ID")
+    vk_token = os.getenv('VK_TOKEN')
+    vk_group_id = os.getenv('VK_GROUP_ID')
 
     vk_session = vk_api.VkApi(token=vk_token)
     vk_method = vk_session.get_api()
     redis_address = os.getenv('REDIS_ADRESS')
     redis_port = os.getenv('REDIS_PORT')
     redis_password = os.getenv('REDiS_PASSWORD')
-    questions = get_answer_questions()
+
     connect_to_redis = redis.Redis(host=redis_address, port=redis_port, password=redis_password, decode_responses=True)
     longpoll = VkBotLongPoll(vk_session, group_id=vk_group_id)
     while True:
         for event in longpoll.listen():
             if event.type == VkBotEventType.MESSAGE_NEW:
-                if event.obj['message']['text'] in ['Привет', 'Начать', 'привет','начать']:
-                    start(event, vk_method, keyboard)
+                if event.obj['message']['text'] in ['Привет', 'Начать', 'привет', 'начать']:
+                    start(event, vk_method)
 
                 elif event.obj['message']['text'] == 'Новый вопрос':
-                    ask_question(event, vk_method, connect_to_redis, questions)
-
+                    ask_question(event, vk_method, connect_to_redis)
                 elif event.obj['message']['text'] == 'Сдаться':
-                    issue_an_answer(event, vk_method, connect_to_redis, questions)
+                    issue_an_answer(event, vk_method, connect_to_redis, )
+                elif event.obj['message']['text'] == 'Мой счет':
+                    show_score(event, vk_method, connect_to_redis)
                 else:
-                    response_check(event, vk_method, questions, connect_to_redis)
+                    response_check(event, vk_method, connect_to_redis)
 
 
 if __name__ == '__main__':
