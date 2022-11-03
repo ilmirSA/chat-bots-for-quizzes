@@ -2,7 +2,7 @@ import json
 import random
 
 
-def get_questions(connect_to_redis):
+def get_question(connect_to_redis):
     get_questions = connect_to_redis.get('questions')
     questions = json.loads(get_questions)
     question_number = random.choice(list(questions))

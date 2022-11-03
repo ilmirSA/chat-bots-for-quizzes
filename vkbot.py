@@ -8,9 +8,9 @@ from vk_api.bot_longpoll import VkBotLongPoll, VkBotEventType
 from vk_api.keyboard import VkKeyboard, VkKeyboardColor
 from vk_api.utils import get_random_id
 
+from collect_data import collect_data
 from get_answer import get_answer
-from get_random_questions import get_questions
-from json_parse import parse_json
+from get_random_question import get_question
 
 
 def keyboard():
@@ -42,16 +42,21 @@ def ask_question(event, vk_method, connect_to_redis):
         connect_to_redis.set(correct_user_responses, 0)
         connect_to_redis.set(incorrect_user_responses, 0)
 
-    question, question_number = get_questions(connect_to_redis)
-    if not connect_to_redis.get('all_users'):
+    question, question_number = get_question(connect_to_redis)
+    if not connect_to_redis.get('users'):
         user_tg_info = {f'user_vk_{user_id}': {'last_asked_question': question_number}}
         user_tg_info_json = json.dumps(user_tg_info)
-        connect_to_redis.set('all_users', user_tg_info_json)
+        connect_to_redis.set('users', user_tg_info_json)
 
     send_message(event, vk_method, user_id, question)
-    users_vk_info = connect_to_redis.get('all_users')
-    user_vk_info_json = parse_json(users_vk_info, user_id, question_number, 'vk', )
-    connect_to_redis.set('all_users', user_vk_info_json)
+    users_vk_info = json.loads(connect_to_redis.get('users'))
+    user_name_key, user_value = collect_data(user_id, question_number, 'vk', )
+
+    users_vk_info[user_name_key] = user_value
+
+    users_vk_info_json = json.dumps(users_vk_info)
+
+    connect_to_redis.set('users', users_vk_info_json)
 
 
 def response_check(event, vk_method, connect_to_redis):
@@ -103,7 +108,7 @@ def show_score(event, vk_method, connect_to_redis):
 
     right_answers = connect_to_redis.get(f'correct_user_responses{user_id}')
     wrong_answers = connect_to_redis.get(f'incorrect_user_responses{user_id}')
-    message = f'Количество правильных ответов : {right_answers} \n Количество не правильных : {wrong_answers}\n Что бы продолжить нажми на кнопку "Новый вопрос"'
+    message = f'''Количество правильных ответов : {right_answers} Количество не правильных : {wrong_answers} Что бы продолжить нажми на кнопку "Новый вопрос" '''
     send_message(event, vk_method, user_id, message)
 
 

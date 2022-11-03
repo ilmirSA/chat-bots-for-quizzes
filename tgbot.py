@@ -8,18 +8,14 @@ from dotenv import load_dotenv
 from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, ConversationHandler
 
+from collect_data import collect_data
 from get_answer import get_answer
-from get_random_questions import get_questions
-from json_parse import parse_json
-
-ASK_QUESTION, CHECK_ANSWER, SURRENDERED = range(3)
+from get_random_question import get_question
 
 
 class Handlers(Enum):
     ASK_QUESTION = auto()
     CHECK_ANSWER = auto()
-    SURRENDERED = auto()
-    MY_SCORE = auto()
 
 
 def create_tg_keyboard():
@@ -31,7 +27,7 @@ def create_tg_keyboard():
 
 def handle_new_question_request(connect_to_redis, update, context):
     chat_id = update.effective_chat.id
-    question, question_number = get_questions(connect_to_redis)
+    question, question_number = get_question(connect_to_redis)
 
     correct_user_responses = f'correct_user_responses{chat_id}'
     incorrect_user_responses = f'incorrect_user_responses{chat_id}'
@@ -46,14 +42,20 @@ def handle_new_question_request(connect_to_redis, update, context):
         reply_markup=create_tg_keyboard()
     )
 
-    if not connect_to_redis.get('all_users'):
+    if not connect_to_redis.get('users'):
         user_tg_info = {f'user_tg_{chat_id}': {'last_asked_question': question_number}}
         user_tg_info_json = json.dumps(user_tg_info)
-        connect_to_redis.set('all_users', user_tg_info_json)
+        connect_to_redis.set('users', user_tg_info_json)
 
-    all_users_info = connect_to_redis.get('all_users')
-    user_json = parse_json(all_users_info, chat_id, question_number, 'tg')
-    connect_to_redis.set('all_users', user_json)
+    all_users_info = json.loads(connect_to_redis.get('users'))
+    user_name_key, user_value = collect_data(chat_id, question_number, 'tg')
+    all_users_info[user_name_key] = user_value
+
+    users_info_json = json.dumps(all_users_info)
+
+    connect_to_redis.set('users', users_info_json)
+
+
 
     return Handlers.CHECK_ANSWER
 
@@ -91,8 +93,7 @@ def hadle_surrendered(connect_to_redis, update, context):
 
     context.bot.send_message(
         chat_id=chat_id,
-        text=f'Вот тебе правильный ответ: {answer}\n\n'
-             f'Что бы продолжить нажми "Новый вопрос"',
+        text=f''' Вот тебе правильный ответ: {answer} Что бы продолжить нажми "Новый вопрос" ''',
     )
     return Handlers.ASK_QUESTION
 
@@ -104,9 +105,7 @@ def show_score(connect_to_redis, update, context):
     wrong_answers = connect_to_redis.get(f'incorrect_user_responses{chat_id}')
     context.bot.send_message(
         chat_id=chat_id,
-        text=f'Количество правильных ответов : {right_answers} \n'
-             f'Количество не правильных : {wrong_answers}\n'
-             f'Что бы продолжить нажми на кнопку "Новый вопрос"',
+        text=f'''Количество правильных ответов : {right_answers} Количество не правильных : {wrong_answers} Что бы продолжить нажми на кнопку "Новый вопрос" ''',
         reply_markup=create_tg_keyboard()
     )
     return Handlers.ASK_QUESTION
