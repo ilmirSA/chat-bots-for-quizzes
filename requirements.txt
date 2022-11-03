@@ -2,5 +2,5 @@ redis==4.3.4
 python-dotenv~=0.21.0
 vk-api==11.9.9
 python-telegram-bot==13.14
-
+colorama==0.4.6
 
