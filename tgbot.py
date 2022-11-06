@@ -8,7 +8,6 @@ from dotenv import load_dotenv
 from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, ConversationHandler
 
-from collect_data import collect_data
 from get_answer import get_answer
 from get_random_question import get_question
 
@@ -48,14 +47,15 @@ def handle_new_question_request(connect_to_redis, update, context):
         connect_to_redis.set('users', user_tg_info_json)
 
     all_users_info = json.loads(connect_to_redis.get('users'))
-    user_name_key, user_value = collect_data(chat_id, question_number, 'tg')
+
+    user_name_key = f"user_tg_{chat_id}"
+    user_value = {"last_asked_question": question_number}
+
     all_users_info[user_name_key] = user_value
 
     users_info_json = json.dumps(all_users_info)
 
     connect_to_redis.set('users', users_info_json)
-
-
 
     return Handlers.CHECK_ANSWER
 

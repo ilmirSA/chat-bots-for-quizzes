@@ -50,7 +50,8 @@ def ask_question(event, vk_method, connect_to_redis):
 
     send_message(event, vk_method, user_id, question)
     users_vk_info = json.loads(connect_to_redis.get('users'))
-    user_name_key, user_value = collect_data(user_id, question_number, 'vk', )
+    user_name_key = f"user_vk_{user_id}"
+    user_value = {"last_asked_question": question_number}
 
     users_vk_info[user_name_key] = user_value
 

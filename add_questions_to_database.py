@@ -38,15 +38,13 @@ def parse_questions(path_to_folder):
 
 def add_to_redis(connect_to_redis, questions):
     redis_questions = {}
-    count = 1
-    for question, answer, in questions.items():
-        n = f'question_{count}'
-        redis_questions[n] = {'question': question,
-                              'answer': answer
-                              }
-        count += 1
-
+    for number, (question, answer) in enumerate(questions.items(), start=1):
+        title = f'question_{number}'
+        redis_questions[title] = {'question': question,
+                                  'answer': answer
+                                  }
     questions_info = json.dumps(redis_questions)
+
     connect_to_redis.set('questions', questions_info)
 
 
